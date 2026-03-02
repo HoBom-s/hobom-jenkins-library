@@ -13,6 +13,7 @@ def call(Map config) {
     def smokeCheckPath = config.get('smokeCheckPath')
     def preBuild       = config.get('preBuild')
     def buildEnvCredId = config.get('buildEnvCredId')
+    def buildEnvPath   = config.get('buildEnvPath')
 
     // ── Constants (hard-coded) ──
     def REGISTRY      = 'docker.io'
@@ -88,6 +89,10 @@ def call(Map config) {
                                 doBuild()
                                 sh 'rm -f .env'
                             }
+                        } else if (buildEnvPath) {
+                            sh "cp '${buildEnvPath}' .env"
+                            doBuild()
+                            sh 'rm -f .env'
                         } else {
                             doBuild()
                         }
