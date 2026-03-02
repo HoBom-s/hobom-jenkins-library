@@ -14,6 +14,7 @@ def call(Map config) {
     def preBuild       = config.get('preBuild')
     def buildEnvCredId = config.get('buildEnvCredId')
     def buildEnvPath   = config.get('buildEnvPath')
+    def exposePublic   = config.get('exposePublic', false)
 
     // ── Constants (hard-coded) ──
     def REGISTRY      = 'docker.io'
@@ -153,7 +154,7 @@ docker run -d --name "\$CONTAINER" \\
   --memory=${memory} --cpus=${cpus} \\
   ${envFileFlag} \\
   ${addHostFlag} \\
-  -p "127.0.0.1:${hostPort}:${containerPort}" \\
+  -p "${exposePublic ? '' : '127.0.0.1:'}${hostPort}:${containerPort}" \\
   "\$IMAGE"
 
 docker ps --filter "name=\$CONTAINER" --format "table {{.Names}}\\t{{.Image}}\\t{{.Status}}\\t{{.Ports}}"
