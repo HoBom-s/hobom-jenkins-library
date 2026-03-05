@@ -12,6 +12,7 @@ def call(Map config) {
     def submodules     = config.get('submodules', false)
     def smokeCheckPath = config.get('smokeCheckPath')
     def preBuild       = config.get('preBuild')
+    def extraPorts     = config.get('extraPorts', [])
     def buildEnvCredId = config.get('buildEnvCredId')
     def buildEnvPath   = config.get('buildEnvPath')
 
@@ -108,6 +109,7 @@ def call(Map config) {
 
                         def envFileFlag = envPath ? "--env-file \"${envPath}\"" : ''
                         def addHostFlag = addHost ? '--add-host=host.docker.internal:host-gateway' : ''
+                        def extraPortsFlag = extraPorts.collect { "-p \"127.0.0.1:${it}\"" }.join(' \\\n  ')
                         def envCheck = envPath ? """
 if [ ! -f "${envPath}" ]; then
   echo "[REMOTE][ERROR] ${envPath} not found."
@@ -154,6 +156,7 @@ docker run -d --name "\$CONTAINER" \\
   ${envFileFlag} \\
   ${addHostFlag} \\
   -p "127.0.0.1:${hostPort}:${containerPort}" \\
+  ${extraPortsFlag} \\
   "\$IMAGE"
 
 docker ps --filter "name=\$CONTAINER" --format "table {{.Names}}\\t{{.Image}}\\t{{.Status}}\\t{{.Ports}}"
