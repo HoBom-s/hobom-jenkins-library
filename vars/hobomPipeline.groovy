@@ -15,6 +15,7 @@ def call(Map config) {
     def extraPorts     = config.get('extraPorts', [])
     def buildEnvCredId = config.get('buildEnvCredId')
     def buildEnvPath   = config.get('buildEnvPath')
+    def dockerfilePath = config.get('dockerfilePath', '.')
 
     // ── Constants (hard-coded) ──
     def REGISTRY      = 'docker.io'
@@ -77,7 +78,7 @@ def call(Map config) {
                                     set +x
                                     echo "\$REG_PASS" | docker login "${REGISTRY}" -u "\$REG_USER" --password-stdin
                                     set -x
-                                    docker build -t "${imageTag}" -t "${imageLatest}" .
+                                    docker build -t "${imageTag}" -t "${imageLatest}" -f "${dockerfilePath}/Dockerfile" .
                                     docker push "${imageTag}"
                                     docker push "${imageLatest}"
                                 """
