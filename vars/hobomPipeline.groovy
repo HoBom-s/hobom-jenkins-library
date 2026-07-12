@@ -18,6 +18,12 @@ def call(Map config) {
     def buildEnvPath   = config.get('buildEnvPath')
     def dockerfilePath = config.get('dockerfilePath', '.')
 
+    // ── Live environment overrides ──
+    def liveHostPort   = config.get('liveHostPort')
+    def liveEnvPath    = config.get('liveEnvPath')
+    def liveExtraPorts = config.get('liveExtraPorts', [])
+    def livePreBuild   = config.get('livePreBuild')
+
     // ── Constants (hard-coded) ──
     def REGISTRY      = 'docker.io'
     def IMAGE_REPO    = 'jjockrod/hobom-system'
@@ -55,17 +61,29 @@ def call(Map config) {
             }
 
             stage('Pre-Build') {
-                when { expression { preBuild != null } }
+                when { expression { preBuild != null || livePreBuild != null } }
                 steps {
-                    script { preBuild() }
+                    script {
+                        if (env.BRANCH_NAME == 'main' && livePreBuild != null) {
+                            livePreBuild()
+                        } else if (preBuild != null) {
+                            preBuild()
+                        }
+                    }
                 }
             }
 
             stage('Build & Push') {
                 steps {
                     script {
-                        def imageTag    = "${REGISTRY}/${IMAGE_REPO}:${serviceName}-${env.BUILD_NUMBER}"
-                        def imageLatest = "${REGISTRY}/${IMAGE_REPO}:${serviceName}-latest"
+                        def isLive = (env.BRANCH_NAME == 'main' && liveHostPort != null)
+                        def effectiveContainer = isLive ? serviceName.replaceFirst('^dev-', 'live-') : serviceName
+
+                        def imageTag    = "${REGISTRY}/${IMAGE_REPO}:${effectiveContainer}-${env.BUILD_NUMBER}"
+                        def imageLatest = "${REGISTRY}/${IMAGE_REPO}:${effectiveContainer}-latest"
+
+                        env.EFFECTIVE_CONTAINER = effectiveContainer
+                        env.EFFECTIVE_IMAGE     = imageLatest
 
                         def doBuild = {
                             withCredentials([usernamePassword(
@@ -107,15 +125,22 @@ def call(Map config) {
                 when { anyOf { branch 'develop'; branch 'main' } }
                 steps {
                     script {
-                        def imageLatest = "${REGISTRY}/${IMAGE_REPO}:${serviceName}-latest"
+                        def isLive = (env.BRANCH_NAME == 'main' && liveHostPort != null)
 
-                        def envFileFlag = envPath ? "--env-file \"${envPath}\"" : ''
+                        def effectiveContainer  = env.EFFECTIVE_CONTAINER ?: serviceName
+                        def effectiveHostPort   = isLive ? liveHostPort : hostPort
+                        def effectiveEnvPath    = isLive ? (liveEnvPath ?: envPath) : envPath
+                        def effectiveNetwork    = isLive ? 'hobom-live-net' : 'hobom-net'
+                        def effectiveExtraPorts = isLive ? liveExtraPorts : extraPorts
+                        def imageLatest         = env.EFFECTIVE_IMAGE ?: "${REGISTRY}/${IMAGE_REPO}:${serviceName}-latest"
+
+                        def envFileFlag = effectiveEnvPath ? "--env-file \"${effectiveEnvPath}\"" : ''
                         def addHostFlag = addHost ? '--add-host=host.docker.internal:host-gateway' : ''
-                        def extraPortsFlag = extraPorts.collect { "-p \"127.0.0.1:${it}\"" }.join(' \\\n  ')
+                        def extraPortsFlag = effectiveExtraPorts.collect { "-p \"127.0.0.1:${it}\"" }.join(' \\\n  ')
                         def extraVolumesFlag = extraVolumes.collect { "-v \"${it}\"" }.join(' \\\n  ')
-                        def envCheck = envPath ? """
-if [ ! -f "${envPath}" ]; then
-  echo "[REMOTE][ERROR] ${envPath} not found."
+                        def envCheck = effectiveEnvPath ? """
+if [ ! -f "${effectiveEnvPath}" ]; then
+  echo "[REMOTE][ERROR] ${effectiveEnvPath} not found."
   exit 1
 fi""" : ''
 
@@ -129,12 +154,13 @@ fi""" : ''
 set -eux
 ssh -o StrictHostKeyChecking=no -p "${DEPLOY_PORT}" "${DEPLOY_USER}@${DEPLOY_HOST}" \\
   IMAGE="${imageLatest}" \\
-  CONTAINER="${serviceName}" \\
+  CONTAINER="${effectiveContainer}" \\
+  NETWORK="${effectiveNetwork}" \\
   PULL_USER="\$PULL_USER" \\
   PULL_PASS="\$PULL_PASS" \\
   bash -s <<'EOS'
 set -euo pipefail
-echo "[REMOTE] Deploying \$CONTAINER with image \$IMAGE"
+echo "[REMOTE] Deploying \$CONTAINER with image \$IMAGE on network \$NETWORK"
 
 if ! command -v docker >/dev/null 2>&1; then
   echo "[REMOTE][ERROR] docker not found."
@@ -151,14 +177,14 @@ if docker ps -a --format '{{.Names}}' | grep -w "\$CONTAINER" >/dev/null 2>&1; t
   docker rm "\$CONTAINER" || true
 fi
 
-docker network create hobom-net || true
+docker network create \$NETWORK || true
 docker run -d --name "\$CONTAINER" \\
-  --network hobom-net \\
+  --network \$NETWORK \\
   --restart unless-stopped \\
   --memory=${memory} --cpus=${cpus} \\
   ${envFileFlag} \\
   ${addHostFlag} \\
-  -p "127.0.0.1:${hostPort}:${containerPort}" \\
+  -p "127.0.0.1:${effectiveHostPort}:${containerPort}" \\
   ${extraPortsFlag} \\
   ${extraVolumesFlag} \\
   "\$IMAGE"
@@ -180,12 +206,17 @@ EOS
                     }
                 }
                 steps {
-                    sshagent(credentials: [SSH_CRED_ID]) {
-                        sh """
-                            ssh -o StrictHostKeyChecking=no -p ${DEPLOY_PORT} ${DEPLOY_USER}@${DEPLOY_HOST} '
-                                curl -fsS http://localhost:${hostPort}${smokeCheckPath} || true
-                            '
-                        """
+                    script {
+                        def isLive = (env.BRANCH_NAME == 'main' && liveHostPort != null)
+                        def effectiveHostPort = isLive ? liveHostPort : hostPort
+
+                        sshagent(credentials: [SSH_CRED_ID]) {
+                            sh """
+                                ssh -o StrictHostKeyChecking=no -p ${DEPLOY_PORT} ${DEPLOY_USER}@${DEPLOY_HOST} '
+                                    curl -fsS http://localhost:${effectiveHostPort}${smokeCheckPath} || true
+                                '
+                            """
+                        }
                     }
                 }
             }
@@ -193,7 +224,7 @@ EOS
 
         post {
             success {
-                echo "Build #${env.BUILD_NUMBER} - ${serviceName} deployed on ${DEPLOY_HOST}"
+                echo "Build #${env.BUILD_NUMBER} - ${env.EFFECTIVE_CONTAINER ?: serviceName} deployed on ${DEPLOY_HOST}"
             }
             failure {
                 echo "Build failed (${env.BRANCH_NAME})"
